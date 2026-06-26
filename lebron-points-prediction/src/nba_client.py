@@ -1,8 +1,13 @@
 """
 NBA data client wrapping nba_api endpoints.
 Handles rate limiting, retries, and local JSON caching.
+
+Tested against nba_api 1.11.x where the following renames happened:
+  per_mode_simple        → per_mode_detailed
+  measure_type_simple_display → measure_type_detailed_defense
 """
 
+import inspect
 import json
 import logging
 import time
@@ -23,12 +28,61 @@ from nba_api.stats.endpoints import (
 from nba_api.stats.static import players, teams
 
 from src.config import get_config
-from src.utils import cache_path, load_cache, retry, save_cache, setup_logging
+from src.utils import cache_path, load_cache, retry, save_cache
 
 logger = logging.getLogger("lebron.nba_client")
 
 # nba_api throttles hard — wait at least this many seconds between calls
 _API_SLEEP: float = 0.8
+
+# ---------------------------------------------------------------------------
+# Parameter name mapping across nba_api versions
+# Key = old/alternative name; value = preferred name in nba_api 1.11+
+# ---------------------------------------------------------------------------
+_PARAM_ALIASES: Dict[str, str] = {
+    "per_mode_simple": "per_mode_detailed",
+    "measure_type_simple_display": "measure_type_detailed_defense",
+    "season_type_all_star": "season_type_all_star",  # unchanged, kept for clarity
+}
+
+
+def _normalize_endpoint_kwargs(endpoint_cls, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Normalize nba_api endpoint keyword names across package versions.
+
+    Mapping applied (nba_api ≤ 1.3 → 1.11+):
+      per_mode_simple          → per_mode_detailed
+      measure_type_simple_display → measure_type_detailed_defense
+
+    Unknown kwargs that the endpoint does not accept are dropped with a warning
+    so a version mismatch never raises TypeError.
+    """
+    sig = inspect.signature(endpoint_cls.__init__)
+    valid = set(sig.parameters.keys()) - {"self"}
+
+    normalized: Dict[str, Any] = {}
+    for k, v in kwargs.items():
+        if k in valid:
+            normalized[k] = v
+        elif k in _PARAM_ALIASES:
+            mapped = _PARAM_ALIASES[k]
+            if mapped in valid:
+                logger.debug(
+                    f"{endpoint_cls.__name__}: mapped '{k}' → '{mapped}'"
+                )
+                normalized[mapped] = v
+            elif k in valid:
+                normalized[k] = v
+            else:
+                logger.warning(
+                    f"{endpoint_cls.__name__}: dropping unsupported kwarg '{k}' "
+                    f"(tried alias '{mapped}', neither accepted)"
+                )
+        else:
+            logger.warning(
+                f"{endpoint_cls.__name__}: dropping unsupported kwarg '{k}'"
+            )
+    return normalized
 
 
 def _sleep():
@@ -63,7 +117,8 @@ class NBAClient:
             return pd.DataFrame(cached)
         logger.info(f"Fetching {endpoint_cls.__name__} (key={cache_key})")
         _sleep()
-        result = endpoint_cls(**kwargs)
+        clean_kwargs = _normalize_endpoint_kwargs(endpoint_cls, kwargs)
+        result = endpoint_cls(**clean_kwargs)
         df = result.get_data_frames()[0]
         self._store(cache_key, df.to_dict(orient="records"))
         return df
@@ -92,11 +147,10 @@ class NBAClient:
     def get_player_game_logs(
         self, player_id: int = None, season: str = None
     ) -> pd.DataFrame:
-        """Fetch per-game stats for a player in a season. Falls back to sample data on network failure."""
+        """Fetch per-game stats for a player across seasons. Falls back to sample data on network failure."""
         pid = player_id or self.cfg.player_id
         seasons = [season] if season else self.cfg.seasons
         frames: List[pd.DataFrame] = []
-        network_failed = False
         for s in seasons:
             key = f"player_gamelog_{pid}_{s}"
             try:
@@ -109,7 +163,7 @@ class NBAClient:
                 )
                 df["SEASON"] = s
                 frames.append(df)
-                # Also pull playoffs
+                # Playoffs
                 key_po = f"player_gamelog_{pid}_{s}_playoffs"
                 try:
                     df_po = self._fetch(
@@ -126,33 +180,35 @@ class NBAClient:
                     logger.warning(f"No playoff logs for {s}: {e}")
             except Exception as e:
                 logger.warning(f"Failed to fetch game logs for {s}: {e}")
-                network_failed = True
-                break  # don't keep retrying all seasons if network is down
+                break  # stop retrying all seasons if network is down
 
         if not frames:
             logger.warning("No game log data fetched — using SAMPLE (synthetic) data.")
             from src.sample_data import generate_player_game_logs, save_sample_cache
             save_sample_cache(self.cache_dir, self.cfg.seasons)
-            combined = generate_player_game_logs(self.cfg.seasons)
-            return combined
+            return generate_player_game_logs(self.cfg.seasons)
 
         combined = pd.concat(frames, ignore_index=True)
-        combined["GAME_DATE"] = pd.to_datetime(combined["GAME_DATE"], format="%b %d, %Y", errors="coerce")
+        combined["GAME_DATE"] = pd.to_datetime(
+            combined["GAME_DATE"], format="%b %d, %Y", errors="coerce"
+        )
         combined = combined.sort_values("GAME_DATE").reset_index(drop=True)
-        # Deduplicate on Game_ID (may be Game_ID or GAME_ID depending on season)
         id_col = "Game_ID" if "Game_ID" in combined.columns else "GAME_ID"
         if id_col in combined.columns:
             combined = combined.drop_duplicates(subset=[id_col]).reset_index(drop=True)
         if "PLAYOFF" not in combined.columns:
             combined["PLAYOFF"] = False
         else:
-            combined["PLAYOFF"] = combined["PLAYOFF"].fillna(False)
+            # fillna then cast to bool to avoid pandas FutureWarning on downcasting
+            combined["PLAYOFF"] = (
+                combined["PLAYOFF"].fillna(False).infer_objects(copy=False).astype(bool)
+            )
         return combined
 
     def get_team_game_logs(
         self, team_id: int = None, season: str = None
     ) -> pd.DataFrame:
-        """Fetch per-game stats for a team in a season."""
+        """Fetch per-game stats for a team across seasons."""
         tid = team_id or self.cfg.team_id
         seasons = [season] if season else self.cfg.seasons
         frames: List[pd.DataFrame] = []
@@ -174,15 +230,19 @@ class NBAClient:
             logger.warning("Team game logs unavailable — returning empty DataFrame.")
             return pd.DataFrame()
         combined = pd.concat(frames, ignore_index=True)
-        combined["GAME_DATE"] = pd.to_datetime(combined["GAME_DATE"], format="%b %d, %Y", errors="coerce")
+        combined["GAME_DATE"] = pd.to_datetime(
+            combined["GAME_DATE"], format="%b %d, %Y", errors="coerce"
+        )
         return combined.sort_values("GAME_DATE").reset_index(drop=True)
 
     # ------------------------------------------------------------------
     # League-wide stats
     # ------------------------------------------------------------------
 
-    def _safe_fetch_multi(self, endpoint_cls, key_template: str, seasons: List[str], **kwargs_template) -> pd.DataFrame:
-        """Fetch across seasons, silently returning empty DataFrame on network failure."""
+    def _safe_fetch_multi(
+        self, endpoint_cls, key_template: str, seasons: List[str], **kwargs_template
+    ) -> pd.DataFrame:
+        """Fetch an endpoint across seasons; skip silently on network failure."""
         frames = []
         for s in seasons:
             key = key_template.format(season=s)
@@ -204,8 +264,9 @@ class NBAClient:
             leaguedashplayerstats.LeagueDashPlayerStats,
             "league_player_stats_{season}_" + per_mode,
             seasons,
-            per_mode_simple=per_mode,
-            measure_type_simple_display="Base",
+            # nba_api 1.11+: per_mode_detailed, measure_type_detailed_defense
+            per_mode_detailed=per_mode,
+            measure_type_detailed_defense="Base",
         )
 
     def get_league_player_advanced(self, season: str = None) -> pd.DataFrame:
@@ -214,8 +275,8 @@ class NBAClient:
             leaguedashplayerstats.LeagueDashPlayerStats,
             "league_player_adv_{season}",
             seasons,
-            per_mode_simple="PerGame",
-            measure_type_simple_display="Advanced",
+            per_mode_detailed="PerGame",
+            measure_type_detailed_defense="Advanced",
         )
 
     def get_league_team_stats(
@@ -226,24 +287,27 @@ class NBAClient:
             leaguedashteamstats.LeagueDashTeamStats,
             f"league_team_stats_{{season}}_{measure}",
             seasons,
-            per_mode_simple="PerGame",
-            measure_type_simple_display=measure,
+            # nba_api 1.11+: per_mode_detailed, measure_type_detailed_defense
+            per_mode_detailed="PerGame",
+            measure_type_detailed_defense=measure,
         )
         if result.empty:
-            logger.warning(f"Team stats unavailable for measure={measure} — using sample data.")
+            logger.warning(
+                f"Team stats unavailable for measure={measure} — using sample data."
+            )
             from src.sample_data import generate_team_stats
             return generate_team_stats(seasons)
         return result
 
     def get_league_team_defensive_stats(self, season: str = None) -> pd.DataFrame:
-        """Opponent stats = defensive stats proxy."""
+        """Pull opponent/defensive stats (Opponent measure type)."""
         seasons = [season] if season else self.cfg.seasons
         result = self._safe_fetch_multi(
             leaguedashteamstats.LeagueDashTeamStats,
             "league_team_opp_{season}",
             seasons,
-            per_mode_simple="PerGame",
-            measure_type_simple_display="Opponent",
+            per_mode_detailed="PerGame",
+            measure_type_detailed_defense="Opponent",
         )
         if result.empty:
             logger.warning("Defensive stats unavailable — using sample data.")
@@ -284,7 +348,7 @@ class NBAClient:
     # ------------------------------------------------------------------
 
     def get_lakers_schedule(self, season: str = None) -> pd.DataFrame:
-        """Use LeagueGameFinder to get Lakers schedule. Falls back to player log dates."""
+        """Use LeagueGameFinder to get Lakers game schedule."""
         seasons = [season] if season else self.cfg.seasons
         frames = []
         for s in seasons:
