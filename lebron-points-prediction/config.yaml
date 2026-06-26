@@ -1,0 +1,104 @@
+player:
+  name: "LeBron James"
+  player_id: 2544
+  team_abbreviation: "LAL"
+  team_id: 1610612747
+
+seasons:
+  - "2018-19"
+  - "2019-20"
+  - "2020-21"
+  - "2021-22"
+  - "2022-23"
+  - "2023-24"
+  - "2024-25"
+  - "2025-26"
+
+target: "PTS"
+
+rolling_windows: [3, 5, 10, 20]
+
+ewma_spans: [3, 5, 10]
+
+odds:
+  markets:
+    - moneyline
+    - spread
+    - total
+    - player_points_prop
+  bookmakers:
+    - draftkings
+    - fanduel
+    - betmgm
+    - caesars
+
+sports_api:
+  # Edit these paths to match your actual Sports API endpoint structure
+  # Base URL is loaded from .env SPORTS_API_BASE_URL
+  events_endpoint: "/v1/events"
+  odds_endpoint: "/v1/odds"
+  player_props_endpoint: "/v1/player-props"
+  sport_key: "basketball_nba"
+  league_id: "NBA"
+  # Query parameter names — edit if your API uses different names
+  params:
+    api_key_param: "api_key"
+    sport_param: "sport"
+    league_param: "league"
+    event_id_param: "event_id"
+    market_param: "market"
+    date_param: "date"
+    team_param: "team"
+
+model:
+  type: "xgboost"  # options: elastic_net, random_forest, gradient_boosting, xgboost, lightgbm
+  test_method: "walk_forward"
+  n_splits: 5
+  test_size: 20  # games per fold
+
+prospect_theory:
+  weights:
+    scoring_disappointment_z: 0.30
+    coming_off_loss: 0.25
+    usage_increase_after_loss: 0.20
+    shot_aggressiveness_change_z: 0.15
+    close_loss_flag: 0.10
+
+pressure_index:
+  weights:
+    playoff_flag: 0.20
+    close_spread_flag: 0.15
+    strong_opponent_flag: 0.15
+    late_season_flag: 0.10
+    losing_streak_flag: 0.10
+    national_tv_flag: 0.10
+    rivalry_flag: 0.10
+    high_total_flag: 0.10
+
+  rivalry_teams:
+    - "GSW"
+    - "BOS"
+    - "MIA"
+    - "CLE"
+    - "DAL"
+
+  strong_opponent_threshold: 110  # opponent offensive rating above this = strong
+  close_spread_threshold: 4.0
+  high_total_threshold: 225.0
+
+cache:
+  enabled: true
+  ttl_hours: 24
+
+logging:
+  level: "INFO"
+  file: "outputs/reports/pipeline.log"
+
+paths:
+  raw_nba: "data/raw/nba"
+  raw_odds: "data/raw/odds"
+  processed: "data/processed"
+  predictions: "data/predictions"
+  model_artifacts: "outputs/model_artifacts"
+  charts: "outputs/charts"
+  reports: "outputs/reports"
