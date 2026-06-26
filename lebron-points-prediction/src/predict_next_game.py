@@ -26,15 +26,14 @@ def _confidence_interval(model, X: pd.DataFrame, feature_cols, n_bootstrap: int 
     Bootstrap confidence interval via prediction variance across trees (RF/GBM)
     or simple residual-based interval for linear models.
     """
+    pred = float(model.predict(X)[0])
     try:
         inner = model.named_steps["model"]
         if hasattr(inner, "estimators_"):
-            preds = np.array([est.predict(X[feature_cols])[0] for est in inner.estimators_])
+            preds = np.array([est.predict(X.values)[0] for est in inner.estimators_])
             return float(np.percentile(preds, 10)), float(np.percentile(preds, 90))
     except Exception:
         pass
-    # Fallback: ±1 SD from historical MAE (~6 points typical for LeBron models)
-    pred = float(model.predict(X[feature_cols])[0])
     return pred - 6.5, pred + 6.5
 
 
@@ -59,6 +58,14 @@ class NextGamePredictor:
 
     def _load_model(self):
         self.model, self.feature_cols = self.trainer.load_best_model()
+        # Restore best_model_name from meta file
+        import json
+        meta_path = self.cfg.model_artifacts_path / "model_meta.json"
+        if meta_path.exists():
+            with open(meta_path) as f:
+                meta = json.load(f)
+            self.trainer.best_model_name = meta.get("model_name", "unknown")
+        self.trainer.best_model = self.model
 
     def predict(self) -> Dict:
         """Full prediction pipeline. Returns a results dict."""
@@ -99,15 +106,13 @@ class NextGamePredictor:
                     last_row[col] = odds_df.iloc[0].get(col, np.nan)
 
         # Predict
-        X = last_row[[c for c in self.feature_cols if c in last_row.columns]]
-        # Fill missing feature cols with NaN
+        # Build feature row with all required columns, filling missing with NaN
+        X = pd.DataFrame(index=last_row.index)
         for col in self.feature_cols:
-            if col not in X.columns:
-                X[col] = np.nan
-        X = X[self.feature_cols]
+            X[col] = last_row[col] if col in last_row.columns else np.nan
 
         pred_pts = float(self.model.predict(X)[0])
-        ci_low, ci_high = _confidence_interval(self.model, last_row, self.feature_cols)
+        ci_low, ci_high = _confidence_interval(self.model, X, self.feature_cols)
 
         # Feature importance for this prediction
         fi_df = self.trainer.get_feature_importance()

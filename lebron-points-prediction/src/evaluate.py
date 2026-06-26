@@ -57,13 +57,17 @@ class Evaluator:
     def run(self, df: pd.DataFrame, trainer: ModelTrainer) -> Dict:
         df = df.sort_values("GAME_DATE").reset_index(drop=True)
         feature_cols = trainer.feature_cols
+        # Only use features that exist in this DataFrame
+        feature_cols = [c for c in feature_cols if c in df.columns]
 
         # Walk-forward predictions on holdout portion
         test_start = len(df) - self.cfg.n_splits * self.cfg.test_size
-        train_df = df.iloc[:test_start]
         test_df = df.iloc[test_start:].copy()
 
-        X_test = test_df[feature_cols]
+        # Build X_test with exactly the saved feature columns (fill missing with NaN)
+        X_test = pd.DataFrame(index=test_df.index)
+        for col in feature_cols:
+            X_test[col] = test_df[col] if col in test_df.columns else np.nan
         y_test = test_df[self.target]
 
         preds = trainer.best_model.predict(X_test)

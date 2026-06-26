@@ -265,6 +265,14 @@ class ModelTrainer:
         else:
             return None
 
+        # LightGBM/XGBoost store feature names on the booster
+        feature_names = self.feature_cols
+        if hasattr(inner, "feature_name_"):
+            feature_names = inner.feature_name_
+        elif hasattr(inner, "feature_names_in_"):
+            feature_names = list(inner.feature_names_in_)
+
+        n = min(len(feature_names), len(imp))
         return pd.DataFrame(
-            {"feature": self.feature_cols, "importance": imp}
+            {"feature": feature_names[:n], "importance": imp[:n]}
         ).sort_values("importance", ascending=False).reset_index(drop=True)
