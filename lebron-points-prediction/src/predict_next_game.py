@@ -10,11 +10,13 @@ from typing import Dict, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+import requests
+
 from src.config import get_config
 from src.data_pipeline import DataPipeline
 from src.feature_engineering import FeatureEngineer
 from src.modeling import ModelTrainer
-from src.odds_client import OddsClient
+from src.odds_client import OddsClient, OddsAPIError
 from src.prospect_theory import ProspectTheoryFeatures
 from src.pressure_index import PressureIndexFeatures
 
@@ -95,10 +97,17 @@ class NextGamePredictor:
         # Fetch odds for next game (tomorrow's date as proxy)
         next_date = (pd.Timestamp(last_game_date) + timedelta(days=1)).strftime("%Y-%m-%d")
         odds_client = OddsClient()
-        odds_df = odds_client.match_odds_to_nba_games([next_date])
+        odds_df = pd.DataFrame()
+        if self.cfg.odds_enabled and self.cfg.odds_use_for_prediction:
+            try:
+                odds_df = odds_client.match_odds_to_nba_games([next_date])
+            except OddsAPIError as exc:
+                logger.warning("Odds unavailable for prediction; NBA-only features used: %s", exc)
+            except requests.RequestException as exc:
+                logger.warning("Odds request failed for prediction; NBA-only features used: %s", exc)
 
         # Update odds columns in last_row if available
-        if not odds_df.empty and len(odds_df) > 0:
+        if not odds_df.empty:
             for col in ["LAKERS_SPREAD", "over_under", "LAKERS_MONEYLINE",
                         "PLAYER_POINTS_LINE", "PLAYER_POINTS_OVER_PRICE",
                         "PLAYER_POINTS_UNDER_PRICE"]:

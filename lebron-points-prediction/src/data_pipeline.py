@@ -8,10 +8,11 @@ from typing import Dict, Optional, Tuple
 
 import pandas as pd
 import numpy as np
+import requests
 
 from src.config import get_config
 from src.nba_client import NBAClient
-from src.odds_client import OddsClient
+from src.odds_client import OddsClient, OddsAPIError
 from src.utils import normalize_team_name
 
 logger = logging.getLogger("lebron.data_pipeline")
@@ -185,27 +186,54 @@ class DataPipeline:
 
         return df.sort_values("GAME_DATE").reset_index(drop=True)
 
+    def _add_empty_odds_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add NaN placeholder columns for all odds features."""
+        odds_cols = [
+            "LAKERS_SPREAD", "LAKERS_MONEYLINE", "OPP_MONEYLINE",
+            "over_under", "PLAYER_POINTS_LINE",
+            "PLAYER_POINTS_OVER_PRICE", "PLAYER_POINTS_UNDER_PRICE",
+            "IMPLIED_TEAM_TOTAL", "IMPLIED_OPP_TOTAL", "IMPLIED_WIN_PROB",
+        ]
+        for col in odds_cols:
+            if col not in df.columns:
+                df[col] = np.nan
+        return df
+
     def _add_odds(self, df: pd.DataFrame) -> pd.DataFrame:
-        logger.info("Fetching odds data...")
+        """Fetch and merge odds data. Skipped for historical training data by default."""
+        cfg = self.cfg
+
+        # Skip historical odds entirely unless explicitly enabled
+        if not cfg.odds_enabled or not cfg.odds_historical_enabled:
+            logger.warning(
+                "Historical odds disabled (odds.historical_enabled=false). "
+                "Continuing NBA-only pipeline with NaN odds placeholders."
+            )
+            return self._add_empty_odds_columns(df)
+
         if not self.odds._has_key():
-            logger.warning("No odds API key — adding NaN odds columns.")
-            odds_cols = [
-                "LAKERS_SPREAD", "LAKERS_MONEYLINE", "OPP_MONEYLINE",
-                "over_under", "PLAYER_POINTS_LINE",
-                "PLAYER_POINTS_OVER_PRICE", "PLAYER_POINTS_UNDER_PRICE",
-            ]
-            for col in odds_cols:
-                df[col] = float("nan")
-            return df
+            logger.warning("No SPORTS_API_KEY set — continuing NBA-only pipeline with NaN odds placeholders.")
+            return self._add_empty_odds_columns(df)
 
-        dates = df["GAME_DATE"].dt.strftime("%Y-%m-%d").unique().tolist()
-        odds_df = self.odds.match_odds_to_nba_games(dates)
+        logger.info("Fetching historical odds data...")
+        try:
+            dates = df["GAME_DATE"].dt.strftime("%Y-%m-%d").unique().tolist()
+            odds_df = self.odds.match_odds_to_nba_games(dates)
+        except OddsAPIError as exc:
+            logger.warning("Odds API error — continuing NBA-only pipeline: %s", exc)
+            return self._add_empty_odds_columns(df)
+        except requests.RequestException as exc:
+            logger.warning("Odds request failed — continuing NBA-only pipeline: %s", exc)
+            return self._add_empty_odds_columns(df)
+
+        if odds_df.empty:
+            logger.warning("Odds response was empty — continuing NBA-only pipeline.")
+            return self._add_empty_odds_columns(df)
+
         odds_df["GAME_DATE"] = pd.to_datetime(odds_df["GAME_DATE"])
-
-        # Select only odds columns to merge
         keep = [c for c in odds_df.columns if c not in df.columns or c == "GAME_DATE"]
         df = df.merge(odds_df[keep], on="GAME_DATE", how="left")
-        return df
+        return self._add_empty_odds_columns(df)  # ensure all placeholder cols exist
 
     def _add_rest_features(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.sort_values("GAME_DATE").reset_index(drop=True)

@@ -21,6 +21,16 @@ rolling_windows: [3, 5, 10, 20]
 ewma_spans: [3, 5, 10]
 
 odds:
+  enabled: true
+  # Fetch historical odds for training data? Most APIs only cover recent/upcoming games.
+  # Set false (default) to skip odds fetching during data pipeline and use NaN placeholders.
+  historical_enabled: false
+  # Use odds features during model training (only matters if historical_enabled: true)
+  use_for_training: false
+  # Attempt odds fetch for next-game prediction
+  use_for_prediction: true
+  # Continue pipeline when odds API is unavailable
+  fail_gracefully: true
   markets:
     - moneyline
     - spread

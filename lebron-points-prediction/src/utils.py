@@ -80,8 +80,12 @@ def retry(
     initial_delay: float = 2.0,
     backoff: float = 2.0,
     exceptions: tuple = (Exception,),
+    no_retry_exceptions: tuple = (),
 ) -> Callable[[F], F]:
-    """Decorator: retry with exponential backoff."""
+    """
+    Decorator: retry with exponential backoff.
+    no_retry_exceptions: exception types that should be raised immediately without retry.
+    """
 
     def decorator(func: F) -> F:
         @wraps(func)
@@ -90,6 +94,8 @@ def retry(
             for attempt in range(1, max_attempts + 1):
                 try:
                     return func(*args, **kwargs)
+                except no_retry_exceptions:
+                    raise
                 except exceptions as exc:
                     if attempt == max_attempts:
                         raise

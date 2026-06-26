@@ -32,6 +32,32 @@ from src.utils import (
 logger = logging.getLogger("lebron.odds_client")
 
 
+# ---------------------------------------------------------------------------
+# Custom exceptions for odds API errors
+# ---------------------------------------------------------------------------
+
+class OddsAPIError(Exception):
+    """Base class for odds API errors."""
+
+
+class OddsEndpointNotFoundError(OddsAPIError):
+    """404 — endpoint path is wrong or not available on this plan."""
+
+
+class OddsAuthenticationError(OddsAPIError):
+    """401/403 — API key is missing, invalid, or lacks permission."""
+
+
+class OddsRateLimitError(OddsAPIError):
+    """429 — rate limit exceeded; retryable with backoff."""
+
+
+def _sanitize_url(url: str) -> str:
+    """Remove api_key value from URL string for safe logging."""
+    import re
+    return re.sub(r'(api_key=)[^&]+', r'\1***', url)
+
+
 class OddsClient:
     """
     Configurable Sports API wrapper.
@@ -67,24 +93,53 @@ class OddsClient:
         if self.cfg.cache_enabled:
             save_cache(cache_path(self.cache_dir, key), data)
 
-    @retry(max_attempts=4, initial_delay=2.0, backoff=2.0, exceptions=(requests.RequestException,))
+    @retry(
+        max_attempts=3,
+        initial_delay=2.0,
+        backoff=2.0,
+        exceptions=(requests.RequestException, OddsRateLimitError),
+        no_retry_exceptions=(OddsEndpointNotFoundError, OddsAuthenticationError),
+    )
     def _get(self, endpoint: str, params: Dict[str, Any]) -> Any:
         """
-        Generic GET request.
-        endpoint: path from config, e.g. '/v1/events'
-        params: query params dict — keys come from config.yaml params block
+        Generic GET request with intelligent error handling.
+        - 404: raises OddsEndpointNotFoundError (not retried)
+        - 401/403: raises OddsAuthenticationError (not retried)
+        - 429: raises OddsRateLimitError (retried with backoff)
+        - 5xx: retried with backoff
+        - Never logs the API key value
         """
         if not self._has_key():
             return None
 
         p = self.api_cfg.get("params", {})
-        # Inject API key using the configured parameter name
         api_key_param = p.get("api_key_param", "api_key")
         params[api_key_param] = self.api_key
 
         url = f"{self.base_url}{endpoint}"
-        logger.info(f"GET {url} params={list(params.keys())}")
-        resp = requests.get(url, params=params, timeout=15)
+        # Log only param names, never values (api_key must not appear in logs)
+        safe_param_keys = [k for k in params if k != api_key_param]
+        logger.debug("GET %s params=[%s, %s=***]", endpoint, ", ".join(safe_param_keys), api_key_param)
+
+        try:
+            resp = requests.get(url, params=params, timeout=15)
+        except requests.RequestException as exc:
+            logger.warning("Odds request network error for %s: %s", endpoint, exc)
+            raise
+
+        if resp.status_code == 404:
+            raise OddsEndpointNotFoundError(
+                f"Odds endpoint not found: {endpoint} (404). "
+                "Check sports_api.events_endpoint in config.yaml."
+            )
+        if resp.status_code in (401, 403):
+            raise OddsAuthenticationError(
+                f"Odds API authentication failed ({resp.status_code}) for {endpoint}. "
+                "Check SPORTS_API_KEY in .env."
+            )
+        if resp.status_code == 429:
+            raise OddsRateLimitError(f"Odds API rate limit hit for {endpoint} (429).")
+
         resp.raise_for_status()
         return resp.json()
 

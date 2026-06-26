@@ -60,9 +60,15 @@ class Config:
         self.test_size: int = self._cfg["model"]["test_size"]
 
         # Odds / Sports API
-        self.odds_markets: List[str] = self._cfg["odds"]["markets"]
-        self.bookmakers: List[str] = self._cfg["odds"]["bookmakers"]
-        self.sports_api_cfg: Dict[str, Any] = self._cfg["sports_api"]
+        odds_cfg = self._cfg.get("odds", {})
+        self.odds_enabled: bool = odds_cfg.get("enabled", True)
+        self.odds_historical_enabled: bool = odds_cfg.get("historical_enabled", False)
+        self.odds_use_for_training: bool = odds_cfg.get("use_for_training", False)
+        self.odds_use_for_prediction: bool = odds_cfg.get("use_for_prediction", True)
+        self.odds_fail_gracefully: bool = odds_cfg.get("fail_gracefully", True)
+        self.odds_markets: List[str] = odds_cfg.get("markets", [])
+        self.bookmakers: List[str] = odds_cfg.get("bookmakers", [])
+        self.sports_api_cfg: Dict[str, Any] = self._cfg.get("sports_api", {})
 
         # Prospect theory weights
         self.prospect_weights: Dict[str, float] = self._cfg["prospect_theory"]["weights"]
