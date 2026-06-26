@@ -119,10 +119,28 @@ class DataPipeline:
         base = self.nba.get_league_team_stats()
         adv = self.nba.get_league_team_stats(measure="Advanced")
 
-        base_lal = base[base["TEAM_ABBREVIATION"] == self.cfg.team_abbreviation].copy()
-        adv_lal = adv[adv["TEAM_ABBREVIATION"] == self.cfg.team_abbreviation].copy()
+        team_abbr = self.cfg.team_abbreviation
+
+        if base.empty or "TEAM_ABBREVIATION" not in base.columns:
+            logger.warning("Base team stats missing TEAM_ABBREVIATION — returning empty context.")
+            return pd.DataFrame()
+
+        base_lal = base[base["TEAM_ABBREVIATION"] == team_abbr].copy()
+        if base_lal.empty:
+            logger.warning(
+                f"No base team stats for {team_abbr}. "
+                f"Available abbreviations: {sorted(base['TEAM_ABBREVIATION'].dropna().unique().tolist())}"
+            )
+            return pd.DataFrame()
 
         merge_keys = ["SEASON", "TEAM_ABBREVIATION"]
+
+        if adv.empty or "TEAM_ABBREVIATION" not in adv.columns:
+            logger.warning("Advanced team stats missing — skipping advanced merge.")
+            return base_lal
+
+        adv_lal = adv[adv["TEAM_ABBREVIATION"] == team_abbr].copy()
+
         # Rename advanced cols to avoid clashes
         adv_cols = [c for c in adv_lal.columns if c not in merge_keys + ["TEAM_ID", "TEAM_NAME", "GP", "W", "L"]]
         adv_lal = adv_lal[merge_keys + adv_cols].rename(

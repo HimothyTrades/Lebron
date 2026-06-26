@@ -89,6 +89,50 @@ def _sleep():
     time.sleep(_API_SLEEP)
 
 
+def _normalize_team_stats_schema(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Ensure df has TEAM_ABBREVIATION and TEAM_NAME columns.
+    Real nba_api LeagueDashTeamStats always has these, but the schema can vary
+    (whitespace, casing, or missing when the season returns no rows).
+    Falls back to nba_api.stats.static.teams lookup via TEAM_ID when needed.
+    """
+    if df.empty:
+        return df
+
+    # Strip whitespace from column names
+    df = df.copy()
+    df.columns = [c.strip() for c in df.columns]
+
+    # Build static lookup: team_id (int) → {abbreviation, nickname}
+    static_teams = teams.get_teams()
+    id_to_abbr = {t["id"]: t["abbreviation"] for t in static_teams}
+    id_to_name = {t["id"]: t["full_name"] for t in static_teams}
+    name_to_abbr = {t["full_name"].upper(): t["abbreviation"] for t in static_teams}
+    name_to_abbr.update({t["nickname"].upper(): t["abbreviation"] for t in static_teams})
+
+    # Derive TEAM_ABBREVIATION if missing
+    if "TEAM_ABBREVIATION" not in df.columns:
+        if "TEAM_ID" in df.columns:
+            df["TEAM_ABBREVIATION"] = df["TEAM_ID"].map(id_to_abbr)
+            logger.debug("TEAM_ABBREVIATION derived from TEAM_ID via static lookup")
+        elif "TEAM_NAME" in df.columns:
+            df["TEAM_ABBREVIATION"] = df["TEAM_NAME"].str.upper().map(name_to_abbr)
+            logger.debug("TEAM_ABBREVIATION derived from TEAM_NAME via static lookup")
+        else:
+            logger.warning("Cannot derive TEAM_ABBREVIATION — no TEAM_ID or TEAM_NAME column")
+            df["TEAM_ABBREVIATION"] = None
+
+    # Derive TEAM_NAME if missing
+    if "TEAM_NAME" not in df.columns and "TEAM_ID" in df.columns:
+        df["TEAM_NAME"] = df["TEAM_ID"].map(id_to_name)
+
+    # Normalize: strip whitespace, uppercase
+    if "TEAM_ABBREVIATION" in df.columns:
+        df["TEAM_ABBREVIATION"] = df["TEAM_ABBREVIATION"].astype(str).str.strip().str.upper()
+
+    return df
+
+
 class NBAClient:
     """Pulls NBA data via nba_api with caching and retry logic."""
 
@@ -297,7 +341,7 @@ class NBAClient:
             )
             from src.sample_data import generate_team_stats
             return generate_team_stats(seasons)
-        return result
+        return _normalize_team_stats_schema(result)
 
     def get_league_team_defensive_stats(self, season: str = None) -> pd.DataFrame:
         """Pull opponent/defensive stats (Opponent measure type)."""
@@ -313,7 +357,7 @@ class NBAClient:
             logger.warning("Defensive stats unavailable — using sample data.")
             from src.sample_data import generate_team_stats
             return generate_team_stats(seasons)
-        return result
+        return _normalize_team_stats_schema(result)
 
     # ------------------------------------------------------------------
     # Box scores

@@ -107,9 +107,11 @@ class NextGamePredictor:
 
         # Predict
         # Build feature row with all required columns, filling missing with NaN
-        X = pd.DataFrame(index=last_row.index)
-        for col in self.feature_cols:
-            X[col] = last_row[col] if col in last_row.columns else np.nan
+        X = pd.concat(
+            {col: last_row[col] if col in last_row.columns else pd.Series([np.nan], index=last_row.index)
+             for col in self.feature_cols},
+            axis=1,
+        )
 
         pred_pts = float(self.model.predict(X)[0])
         ci_low, ci_high = _confidence_interval(self.model, X, self.feature_cols)

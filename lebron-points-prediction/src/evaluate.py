@@ -65,9 +65,11 @@ class Evaluator:
         test_df = df.iloc[test_start:].copy()
 
         # Build X_test with exactly the saved feature columns (fill missing with NaN)
-        X_test = pd.DataFrame(index=test_df.index)
-        for col in feature_cols:
-            X_test[col] = test_df[col] if col in test_df.columns else np.nan
+        X_test = pd.concat(
+            {col: test_df[col] if col in test_df.columns else pd.Series(np.nan, index=test_df.index)
+             for col in feature_cols},
+            axis=1,
+        )
         y_test = test_df[self.target]
 
         preds = trainer.best_model.predict(X_test)
