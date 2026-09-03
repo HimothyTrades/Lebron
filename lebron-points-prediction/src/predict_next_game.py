@@ -33,10 +33,10 @@ def _confidence_interval(model, X: pd.DataFrame, feature_cols, n_bootstrap: int 
         inner = model.named_steps["model"]
         if hasattr(inner, "estimators_"):
             preds = np.array([est.predict(X.values)[0] for est in inner.estimators_])
-            return float(np.percentile(preds, 10)), float(np.percentile(preds, 90))
+            return float(np.percentile(preds, 2.5)), float(np.percentile(preds, 97.5))
     except Exception:
         pass
-    return pred - 6.5, pred + 6.5
+    return pred - 9.5, pred + 9.5
 
 
 def _american_odds_to_pct(ml) -> Optional[float]:
@@ -147,7 +147,7 @@ class NextGamePredictor:
             "prediction_date": next_date,
             "player": self.cfg.player_name,
             "predicted_points": round(pred_pts, 1),
-            "confidence_interval_80pct": (round(ci_low, 1), round(ci_high, 1)),
+            "confidence_interval_95pct": (round(ci_low, 1), round(ci_high, 1)),
             "top_factors": top_factors,
             "vegas_player_prop_line": prop_line if not np.isnan(prop_line) else "N/A",
             "model_edge_vs_vegas": round(model_edge, 2) if model_edge is not None else "N/A",
@@ -163,7 +163,7 @@ class NextGamePredictor:
         print(f"  {result['prediction_date']}")
         print("=" * 60)
         print(f"  Predicted Points:     {result['predicted_points']}")
-        print(f"  80% Confidence Range: {result['confidence_interval_80pct'][0]} – {result['confidence_interval_80pct'][1]}")
+        print(f"  95% Confidence Range: {result['confidence_interval_95pct'][0]} – {result['confidence_interval_95pct'][1]}")
         print(f"  Vegas Prop Line:      {result['vegas_player_prop_line']}")
         print(f"  Model Edge vs Vegas:  {result['model_edge_vs_vegas']}")
         print(f"  Recommendation:       {result['recommendation']}")
